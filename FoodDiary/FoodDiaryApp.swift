@@ -2,7 +2,7 @@
 //  FoodDiaryApp.swift
 //  FoodDiary
 //
-//  Created by Ramandeep on 11/11/25.
+//  Created by NaabC on 11/11/25.
 //
 
 import SwiftUI
@@ -12,7 +12,7 @@ import SwiftData
 struct FoodDiaryApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            VisitEntry.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
