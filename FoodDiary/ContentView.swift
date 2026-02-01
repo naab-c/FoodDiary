@@ -10,14 +10,32 @@ import SwiftData
 import MapKit
 
 struct ContentView: View {
+    var body: some View {
+        TabView {
+            HomeTab()
+                .tabItem {
+                    Label("Home", systemImage: "house.fill")
+                }
+            
+            MyVisitsTab()
+                .tabItem {
+                    Label("My Visits", systemImage: "list.bullet")
+                }
+        }
+    }
+}
+
+// MARK: - Home Tab
+private struct HomeTab: View {
     @Environment(\.modelContext) private var ctx
     @Query(sort: \VisitEntry.name) private var visits: [VisitEntry]
 
     @State private var locationSvc = LocationService()
-    @State private var status = "Pick a place from the list."
+    @State private var status = "Tap 'Find nearby places' to get started."
     @State private var currentItem: MKMapItem?
     @State private var existing: VisitEntry?
     @State private var notes: String = ""
+    @State private var isNewlySaved: Bool = false
 
     // Picker state
     @State private var candidates: [MKMapItem] = []
@@ -27,7 +45,9 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                Text(status).multilineTextAlignment(.center)
+                Text(status)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
 
                 Button("Find nearby places") {
                     locationSvc.requestWhenInUse()
@@ -35,7 +55,10 @@ struct ContentView: View {
                     locationSvc.getOneLocation { coord in
                         lastCoord = coord
                         status = "Searching nearby places…"
+                        let startTime = Date()
                         searchNearbyPlaces(near: coord) { items in
+                            let elapsed = Date().timeIntervalSince(startTime)
+                            print("Search completed in \(String(format: "%.2f", elapsed)) seconds with \(items.count) results")
                             candidates = items
                             showPicker = true
                             status = items.isEmpty ? "No places found." : "Pick a place from the list."
@@ -43,42 +66,35 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .padding(.horizontal)
 
                 if let v = existing {
-                    KnownPlaceView(visit: v)
+                    KnownPlaceView(visit: v, isNewlySaved: isNewlySaved)
+                        .padding(.horizontal)
                 } else if let item = currentItem {
                     NewPlaceForm(item: item, notes: $notes) {
                         let pid = makePlaceId(for: item)
                         let v = VisitEntry(
                             placeId: pid,
                             name: item.name ?? "Unknown place",
-                            coordinate: item.location.coordinate,     // iOS 26+: non-optional
+                            coordinate: item.location.coordinate,
                             notes: notes.isEmpty ? nil : notes
                         )
                         ctx.insert(v)
                         try? ctx.save()
                         existing = v
-                        status = "Saved \(v.name)."
+                        isNewlySaved = true
+                        status = "Saved \(v.name) to My Visits."
+                        currentItem = nil
+                        notes = ""
                     }
-                }
-
-                Divider().padding(.vertical, 8)
-
-                if !visits.isEmpty {
-                    Text("Saved visits").font(.headline)
-                    List(visits, id: \.placeId) { v in
-                        VStack(alignment: .leading) {
-                            Text(v.name).bold()
-                            if let n = v.notes { Text(n) }
-                        }
-                    }
-                    .frame(height: 220)
+                    .padding(.horizontal)
                 }
 
                 Spacer()
             }
-            .padding()
-            .navigationTitle("FoodDiary")
+            .padding(.vertical)
+            .navigationTitle("Home")
             .sheet(isPresented: $showPicker) {
                 PlacePickerSheet(
                     candidates: candidates,
@@ -89,7 +105,7 @@ struct ContentView: View {
                     }
                 )
                 .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)   // <-- use system grabber
+                .presentationDragIndicator(.visible)
             }
         }
     }
@@ -100,11 +116,52 @@ struct ContentView: View {
         let fetch = FetchDescriptor<VisitEntry>(predicate: #Predicate { $0.placeId == pid })
         let found = try? ctx.fetch(fetch).first
         existing = found
+        isNewlySaved = false  // Reset flag when selecting a new place
         if let found {
-            status = "You’ve visited this place before: \(found.name)"
+            status = "You've visited this place before: \(found.name)"
+            currentItem = nil
         } else {
-            status = "New place detected: \(item.name ?? "Unknown place"). Add details and Save."
+            status = "New place: \(item.name ?? "Unknown place"). Add notes and save to My Visits."
             notes = ""
+        }
+    }
+}
+
+// MARK: - My Visits Tab
+private struct MyVisitsTab: View {
+    @Query(sort: \VisitEntry.name) private var visits: [VisitEntry]
+    @Environment(\.modelContext) private var ctx
+
+    var body: some View {
+        NavigationStack {
+            if visits.isEmpty {
+                VStack(spacing: 16) {
+                    Image(systemName: "list.bullet.clipboard")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.secondary)
+                    Text("No visits yet")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("Find nearby places from the Home tab and save them here.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(visits, id: \.placeId) { visit in
+                    EditableVisitRow(visit: visit)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                ctx.delete(visit)
+                                try? ctx.save()
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                }
+                .navigationTitle("My Visits")
+            }
         }
     }
 }
@@ -175,14 +232,26 @@ private struct SheetHandle: View {
 
 private struct KnownPlaceView: View {
     @Bindable var visit: VisitEntry
+    let isNewlySaved: Bool
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Previously saved").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(isNewlySaved ? "Food Notes" : "Previously Visited")
+                .font(.headline)
+            Divider()
             Text("Name: \(visit.name)")
+                .font(.body)
             if let n = visit.notes, !n.isEmpty {
-                Text("Notes: \(n)")
+                Text("Notes:")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                Text(n)
+                    .padding(.top, 2)
             } else {
-                Text("No notes saved yet.").foregroundStyle(.secondary)
+                Text("No notes saved yet.")
+                    .foregroundStyle(.secondary)
+                    .italic()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -209,5 +278,66 @@ private struct NewPlaceForm: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct EditableVisitRow: View {
+    @Bindable var visit: VisitEntry
+    @Environment(\.modelContext) private var ctx
+    @State private var editingNotes: String = ""
+    @State private var isEditing: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(visit.name)
+                .font(.headline)
+            
+            if isEditing {
+                TextEditor(text: $editingNotes)
+                    .frame(minHeight: 60)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary, lineWidth: 1))
+                
+                HStack {
+                    Button("Cancel") {
+                        editingNotes = visit.notes ?? ""
+                        isEditing = false
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Button("Save") {
+                        // Update the visit's notes directly
+                        visit.notes = editingNotes.isEmpty ? nil : editingNotes
+                        // SwiftData with @Bindable should auto-save, but we'll explicitly save to be sure
+                        do {
+                            try ctx.save()
+                            isEditing = false
+                        } catch {
+                            print("Error saving notes: \(error.localizedDescription)")
+                            // Even if save fails, exit edit mode
+                            isEditing = false
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else {
+                if let notes = visit.notes, !notes.isEmpty {
+                    Text(notes)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("No notes")
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                }
+                
+                Button("Edit Notes") {
+                    editingNotes = visit.notes ?? ""
+                    isEditing = true
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.blue)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }

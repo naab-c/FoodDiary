@@ -27,17 +27,35 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     func getOneLocation(_ handler: @escaping (CLLocationCoordinate2D) -> Void) {
         pendingHandler = handler
-        manager.startUpdatingLocation()  // start only after permission is granted
+        
+        // Check authorization status before starting
+        switch manager.authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            manager.startUpdatingLocation()
+        case .denied, .restricted:
+            print("Location permission denied.")
+            // Handler won't be called, but we should notify somehow
+        case .notDetermined:
+            // Permission will be requested, delegate will handle starting
+            manager.requestWhenInUseAuthorization()
+        @unknown default:
+            break
+        }
     }
 
     // ✅ Called automatically when permission changes
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
-            manager.startUpdatingLocation()
+            // Only start if we have a pending handler
+            if pendingHandler != nil {
+                manager.startUpdatingLocation()
+            }
         case .denied, .restricted:
             print("Location permission denied.")
+            pendingHandler = nil
         case .notDetermined:
+            // Request permission if not already requested
             manager.requestWhenInUseAuthorization()
         @unknown default:
             break
@@ -50,6 +68,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         pendingHandler = nil
         manager.stopUpdatingLocation()
     }
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        print("Location error: \(error.localizedDescription)")
+        pendingHandler = nil
+        manager.stopUpdatingLocation()
+    }
 }
 
 func searchNearbyPlaces(near coordinate: CLLocationCoordinate2D,
@@ -58,8 +82,9 @@ func searchNearbyPlaces(near coordinate: CLLocationCoordinate2D,
     let milesToMeters = 1609.34
     var regionMiles: Double = 2.0        // start ~2 miles
     let maxRegionMiles: Double = 5.0     // widen to ~5 miles if sparse
+    let minResultsForEarlyFinish = 30    // Finish early if we have enough results
 
-    // Staged queries: tighten → widen
+    // Staged queries: prioritize food-related first, then others
     let queryBatches: [[String]] = [
         ["restaurant", "cafe", "coffee", "food"],
         ["store", "grocery", "bakery"],
@@ -113,34 +138,38 @@ func searchNearbyPlaces(near coordinate: CLLocationCoordinate2D,
         guard batchIndex < queryBatches.count else { finish(); return }
 
         let labels = queryBatches[batchIndex]
-        var i = 0
+        let group = DispatchGroup()
 
-        func nextQuery() {
-            guard i < labels.count else {
-                // If still empty after this batch, widen once and try next batch
-                if merged.isEmpty && regionMiles < maxRegionMiles {
-                    regionMiles = maxRegionMiles
-                }
-                runBatch(batchIndex + 1)
-                return
-            }
-
+        // Run all queries in this batch in parallel
+        for label in labels {
+            group.enter()
             let req = MKLocalSearch.Request()
-            req.naturalLanguageQuery = labels[i]
+            req.naturalLanguageQuery = label
             req.region = region(regionMiles)
-            let tag = labels[i]
-            i += 1
 
             MKLocalSearch(request: req).start { response, error in
+                defer { group.leave() }
                 let items = response?.mapItems ?? []
-                print("DEBUG query '\(tag)' items:", items.count,
+                print("DEBUG query '\(label)' items:", items.count,
                       error == nil ? "" : "error: \(error!.localizedDescription)")
                 for it in items { merged[key(for: it)] = it }
-                nextQuery()
             }
         }
 
-        nextQuery()
+        // Wait for all queries in this batch to complete
+        group.notify(queue: .main) {
+            // If we have enough results, finish early (don't need all batches)
+            if merged.count >= minResultsForEarlyFinish {
+                finish()
+                return
+            }
+            
+            // If still empty after this batch, widen once and try next batch
+            if merged.isEmpty && regionMiles < maxRegionMiles {
+                regionMiles = maxRegionMiles
+            }
+            runBatch(batchIndex + 1)
+        }
     }
 
     runBatch(0)
@@ -227,3 +256,4 @@ func makePlaceId(for item: MKMapItem) -> String {
     let baseName = (item.name?.isEmpty == false) ? item.name! : "Unknown"
     return "\(baseName)_\(rlat)_\(rlon)"
 }
+
