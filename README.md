@@ -48,16 +48,9 @@ FoodDiary/
 
 ## Future Enhancements
 
-- [ ] Add photos to visit entries
-- [ ] Filter and sort visits by date, distance, or name
 - [ ] Map view showing all visited places
-- [ ] Export visit history
-- [ ] Search within saved visits
+- [ ] Filter and sort visits by date, distance, or name
 
 ## About
 
 Personal project and portfolio piece.
-
----
-
-*Built with ❤️ using SwiftUI and SwiftData*

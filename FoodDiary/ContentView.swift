@@ -45,9 +45,11 @@ private struct HomeTab: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                Text(status)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                if !status.isEmpty {
+                    Text(status)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                }
 
                 Button("Find nearby places") {
                     locationSvc.requestWhenInUse()
@@ -94,7 +96,21 @@ private struct HomeTab: View {
                 Spacer()
             }
             .padding(.vertical)
-            .navigationTitle("Home")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("FoodDiary")
+                        .font(.headline)
+                }
+            }
+            .onAppear {
+                // Clear saved status message when returning to Home tab
+                if status.contains("Saved") || status.contains("to My Visits") {
+                    status = "Tap 'Find nearby places' to get started."
+                    existing = nil
+                    isNewlySaved = false
+                }
+            }
             .sheet(isPresented: $showPicker) {
                 PlacePickerSheet(
                     candidates: candidates,
@@ -118,7 +134,7 @@ private struct HomeTab: View {
         existing = found
         isNewlySaved = false  // Reset flag when selecting a new place
         if let found {
-            status = "You've visited this place before: \(found.name)"
+            status = ""  // Clear status since details are shown below
             currentItem = nil
         } else {
             status = "New place: \(item.name ?? "Unknown place"). Add notes and save to My Visits."
@@ -131,6 +147,17 @@ private struct HomeTab: View {
 private struct MyVisitsTab: View {
     @Query(sort: \VisitEntry.name) private var visits: [VisitEntry]
     @Environment(\.modelContext) private var ctx
+    @State private var searchText = ""
+
+    private var filteredVisits: [VisitEntry] {
+        if searchText.isEmpty {
+            return visits
+        }
+        return visits.filter { visit in
+            visit.name.localizedCaseInsensitiveContains(searchText) ||
+            (visit.notes?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -149,7 +176,7 @@ private struct MyVisitsTab: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(visits, id: \.placeId) { visit in
+                List(filteredVisits, id: \.placeId) { visit in
                     EditableVisitRow(visit: visit)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
@@ -161,6 +188,7 @@ private struct MyVisitsTab: View {
                         }
                 }
                 .navigationTitle("My Visits")
+                .searchable(text: $searchText, prompt: "Search visits")
             }
         }
     }
