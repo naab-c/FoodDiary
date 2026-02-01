@@ -1,2 +1,2 @@
 # FoodDiary
-FoodDiary repo
+FoodDiary repository
