@@ -16,7 +16,7 @@ struct ContentView: View {
                 .tabItem {
                     Label("Home", systemImage: "house.fill")
                 }
-            
+
             MyVisitsTab()
                 .tabItem {
                     Label("My Visits", systemImage: "list.bullet")
@@ -52,6 +52,12 @@ private struct HomeTab: View {
                 }
 
                 Button("Find nearby places") {
+                    // Clear any existing form when starting new search
+                    currentItem = nil
+                    notes = ""
+                    existing = nil
+                    isNewlySaved = false
+
                     locationSvc.requestWhenInUse()
                     status = "Getting your location…"
                     locationSvc.getOneLocation { coord in
@@ -74,22 +80,31 @@ private struct HomeTab: View {
                     KnownPlaceView(visit: v, isNewlySaved: isNewlySaved)
                         .padding(.horizontal)
                 } else if let item = currentItem {
-                    NewPlaceForm(item: item, notes: $notes) {
-                        let pid = makePlaceId(for: item)
-                        let v = VisitEntry(
-                            placeId: pid,
-                            name: item.name ?? "Unknown place",
-                            coordinate: item.location.coordinate,
-                            notes: notes.isEmpty ? nil : notes
-                        )
-                        ctx.insert(v)
-                        try? ctx.save()
-                        existing = v
-                        isNewlySaved = true
-                        status = "Saved \(v.name) to My Visits."
-                        currentItem = nil
-                        notes = ""
-                    }
+                    NewPlaceForm(
+                        item: item,
+                        notes: $notes,
+                        onSave: {
+                            let pid = makePlaceId(for: item)
+                            let v = VisitEntry(
+                                placeId: pid,
+                                name: item.name ?? "Unknown place",
+                                coordinate: item.location.coordinate,
+                                notes: notes.isEmpty ? nil : notes
+                            )
+                            ctx.insert(v)
+                            try? ctx.save()
+                            existing = v
+                            isNewlySaved = true
+                            status = "Saved \(v.name) to My Visits."
+                            currentItem = nil
+                            notes = ""
+                        },
+                        onCancel: {
+                            currentItem = nil
+                            notes = ""
+                            status = "Tap 'Find nearby places' to get started."
+                        }
+                    )
                     .padding(.horizontal)
                 }
 
@@ -104,11 +119,24 @@ private struct HomeTab: View {
                 }
             }
             .onAppear {
-                // Clear saved status message when returning to Home tab
-                if status.contains("Saved") || status.contains("to My Visits") {
-                    status = "Tap 'Find nearby places' to get started."
+                // Clear everything when returning to Home tab
+                // This gives a clean slate each time user returns
+
+                // Clear any displayed visit entry (previously visited or newly saved)
+                if existing != nil {
                     existing = nil
                     isNewlySaved = false
+                    status = "Tap 'Find nearby places' to get started."
+                }
+                // Clear unsaved form if present
+                else if currentItem != nil {
+                    currentItem = nil
+                    notes = ""
+                    status = "Tap 'Find nearby places' to get started."
+                }
+                // Reset status if it was a saved message
+                else if status.contains("Saved") || status.contains("to My Visits") {
+                    status = "Tap 'Find nearby places' to get started."
                 }
             }
             .sheet(isPresented: $showPicker) {
@@ -133,7 +161,7 @@ private struct HomeTab: View {
         let found = try? ctx.fetch(fetch).first
         existing = found
         isNewlySaved = false  // Reset flag when selecting a new place
-        if let found {
+        if found != nil {
             status = ""  // Clear status since details are shown below
             currentItem = nil
         } else {
@@ -232,7 +260,7 @@ private struct PlacePickerSheet: View {
                         prompt: "Search by name")
         }
     }
-    
+
     private func distanceString(from origin: CLLocationCoordinate2D?, to item: MKMapItem) -> String? {
         guard let origin else { return nil }
         let dest = item.location.coordinate
@@ -261,7 +289,7 @@ private struct SheetHandle: View {
 private struct KnownPlaceView: View {
     @Bindable var visit: VisitEntry
     let isNewlySaved: Bool
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(isNewlySaved ? "Food Notes" : "Previously Visited")
@@ -292,6 +320,7 @@ private struct NewPlaceForm: View {
     let item: MKMapItem
     @Binding var notes: String
     var onSave: () -> Void
+    var onCancel: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -300,8 +329,14 @@ private struct NewPlaceForm: View {
             TextEditor(text: $notes)
                 .frame(minHeight: 100)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
-            Button("Save to My Visits", action: onSave)
-                .buttonStyle(.borderedProminent)
+            HStack {
+                Button("Save to My Visits", action: onSave)
+                    .buttonStyle(.borderedProminent)
+                if let onCancel = onCancel {
+                    Button("Cancel", action: onCancel)
+                        .buttonStyle(.bordered)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -319,19 +354,19 @@ private struct EditableVisitRow: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(visit.name)
                 .font(.headline)
-            
+
             if isEditing {
                 TextEditor(text: $editingNotes)
                     .frame(minHeight: 60)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary, lineWidth: 1))
-                
+
                 HStack {
                     Button("Cancel") {
                         editingNotes = visit.notes ?? ""
                         isEditing = false
                     }
                     .buttonStyle(.bordered)
-                    
+
                     Button("Save") {
                         // Update the visit's notes directly
                         visit.notes = editingNotes.isEmpty ? nil : editingNotes
@@ -356,7 +391,7 @@ private struct EditableVisitRow: View {
                         .foregroundStyle(.tertiary)
                         .italic()
                 }
-                
+
                 Button("Edit Notes") {
                     editingNotes = visit.notes ?? ""
                     isEditing = true
