@@ -9,18 +9,58 @@ import SwiftUI
 import SwiftData
 import MapKit
 
-struct ContentView: View {
+// MARK: - App background (gradient + optional background image)
+private let appGradient = LinearGradient(
+    colors: [
+        Color(red: 1.0, green: 0.98, blue: 0.88),
+        Color(red: 1.0, green: 0.95, blue: 0.82),
+        Color(red: 1.0, green: 0.92, blue: 0.78)
+    ],
+    startPoint: .topLeading,
+    endPoint: .bottomTrailing
+)
+
+/// Background with optional image (brick, flowers, etc.). Add your image to Assets → AppBackground.
+private struct AppBackgroundView: View {
     var body: some View {
-        TabView {
+        GeometryReader { geo in
+            ZStack {
+                appGradient
+                Image("AppBackground")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+                    .opacity(0.45)
+            }
+        }
+        .ignoresSafeArea(.all)
+    }
+}
+
+struct ContentView: View {
+    @EnvironmentObject private var geofenceService: VisitGeofenceService
+    @State private var selectedTab = 0
+
+    var body: some View {
+        TabView(selection: $selectedTab) {
             HomeTab()
                 .tabItem {
                     Label("Home", systemImage: "house.fill")
                 }
+                .tag(0)
 
             MyVisitsTab()
                 .tabItem {
                     Label("My Visits", systemImage: "list.bullet")
                 }
+                .tag(1)
+        }
+        .background(AppBackgroundView().ignoresSafeArea(.all))
+        .onChange(of: geofenceService.pendingPlaceIdToShow) { _, newValue in
+            if newValue != nil {
+                selectedTab = 0
+            }
         }
     }
 }
@@ -28,6 +68,7 @@ struct ContentView: View {
 // MARK: - Home Tab
 private struct HomeTab: View {
     @Environment(\.modelContext) private var ctx
+    @EnvironmentObject private var geofenceService: VisitGeofenceService
     @Query(sort: \VisitEntry.name) private var visits: [VisitEntry]
 
     @State private var locationSvc = LocationService()
@@ -41,6 +82,11 @@ private struct HomeTab: View {
     @State private var candidates: [MKMapItem] = []
     @State private var showPicker = false
     @State private var lastCoord: CLLocationCoordinate2D?
+
+    // "You've been here" bubble when user is at a saved restaurant
+    @State private var showNearbyBubble: VisitEntry?
+    @State private var nearbyBubbleDismissed = false  // don't show again after dismiss until next "Find nearby"
+    private let nearbyRadiusMeters: Double = 150
 
     var body: some View {
         NavigationStack {
@@ -57,6 +103,7 @@ private struct HomeTab: View {
                     notes = ""
                     existing = nil
                     isNewlySaved = false
+                    nearbyBubbleDismissed = false  // allow bubble to show again next time at a saved place
 
                     locationSvc.requestWhenInUse()
                     status = "Getting your location…"
@@ -93,6 +140,7 @@ private struct HomeTab: View {
                             )
                             ctx.insert(v)
                             try? ctx.save()
+                            geofenceService.updateMonitoredRegions()
                             existing = v
                             isNewlySaved = true
                             status = "Saved \(v.name) to My Visits."
@@ -111,6 +159,8 @@ private struct HomeTab: View {
                 Spacer()
             }
             .padding(.vertical)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(AppBackgroundView().ignoresSafeArea(.all))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
@@ -118,25 +168,55 @@ private struct HomeTab: View {
                         .font(.headline)
                 }
             }
+            .overlay {
+                if let visit = showNearbyBubble {
+                    NearbyVisitBubbleView(visit: visit) {
+                        showNearbyBubble = nil
+                        nearbyBubbleDismissed = true  // don't show again until they tap Find nearby
+                    }
+                }
+            }
             .onAppear {
-                // Clear everything when returning to Home tab
-                // This gives a clean slate each time user returns
+                // If we opened from an arrival notification tap, show that visit's details (don't set nearbyBubbleDismissed so in-app bubble can still show later)
+                if let placeId = geofenceService.pendingPlaceIdToShow {
+                    if let visit = visits.first(where: { $0.placeId == placeId }) {
+                        showNearbyBubble = visit
+                    }
+                    geofenceService.pendingPlaceIdToShow = nil
+                }
 
-                // Clear any displayed visit entry (previously visited or newly saved)
+                // Clear everything when returning to Home tab
                 if existing != nil {
                     existing = nil
                     isNewlySaved = false
                     status = "Tap 'Find nearby places' to get started."
                 }
-                // Clear unsaved form if present
                 else if currentItem != nil {
                     currentItem = nil
                     notes = ""
                     status = "Tap 'Find nearby places' to get started."
                 }
-                // Reset status if it was a saved message
                 else if status.contains("Saved") || status.contains("to My Visits") {
                     status = "Tap 'Find nearby places' to get started."
+                }
+
+                // Check if user is at a saved restaurant and show "You've been here" bubble (only if not already dismissed)
+                if !visits.isEmpty, existing == nil, currentItem == nil, !nearbyBubbleDismissed {
+                    locationSvc.requestWhenInUse()
+                    locationSvc.getOneLocation { coord in
+                        let userLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+                        var closest: (visit: VisitEntry, distance: Double)?
+                        for visit in visits {
+                            let placeLoc = CLLocation(latitude: visit.latitude, longitude: visit.longitude)
+                            let d = userLoc.distance(from: placeLoc)
+                            if d <= nearbyRadiusMeters, closest == nil || d < (closest?.distance ?? .infinity) {
+                                closest = (visit, d)
+                            }
+                        }
+                        if let match = closest {
+                            showNearbyBubble = match.visit
+                        }
+                    }
                 }
             }
             .sheet(isPresented: $showPicker) {
@@ -175,6 +255,7 @@ private struct HomeTab: View {
 private struct MyVisitsTab: View {
     @Query(sort: \VisitEntry.name) private var visits: [VisitEntry]
     @Environment(\.modelContext) private var ctx
+    @EnvironmentObject private var geofenceService: VisitGeofenceService
     @State private var searchText = ""
 
     private var filteredVisits: [VisitEntry] {
@@ -203,6 +284,7 @@ private struct MyVisitsTab: View {
                         .padding(.horizontal)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(AppBackgroundView().ignoresSafeArea(.all))
             } else {
                 List(filteredVisits, id: \.placeId) { visit in
                     EditableVisitRow(visit: visit)
@@ -210,11 +292,14 @@ private struct MyVisitsTab: View {
                             Button(role: .destructive) {
                                 ctx.delete(visit)
                                 try? ctx.save()
+                                geofenceService.updateMonitoredRegions()
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
                 }
+                .scrollContentBackground(.hidden)
+                .background(AppBackgroundView().ignoresSafeArea(.all))
                 .navigationTitle("My Visits")
                 .searchable(text: $searchText, prompt: "Search visits")
             }
@@ -280,6 +365,67 @@ private struct SheetHandle: View {
     var body: some View {
         VStack(spacing: 8) {
             Capsule().fill(.tertiary).frame(width: 36, height: 5).padding(.top, 8)
+        }
+    }
+}
+
+// MARK: - "You've been here" bubble (when user opens app at a saved restaurant)
+private struct NearbyVisitBubbleView: View {
+    let visit: VisitEntry
+    let onDismiss: () -> Void
+
+    private let bubbleAccent = Color(red: 0.95, green: 0.6, blue: 0.2)
+    private let bubbleBg = Color(red: 1.0, green: 0.97, blue: 0.92)
+    private let bubbleCornerRadius: CGFloat = 28
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture(perform: onDismiss)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: "location.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(bubbleAccent)
+                    Text("You've been here before")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Text(visit.name)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                if let notes = visit.notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .padding(.top, 4)
+                } else {
+                    Text("No notes saved for this visit.")
+                        .font(.body)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                        .padding(.top, 4)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(bubbleBg, in: RoundedRectangle(cornerRadius: bubbleCornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: bubbleCornerRadius)
+                    .stroke(bubbleAccent.opacity(0.6), lineWidth: 2)
+            )
+            .shadow(color: .black.opacity(0.2), radius: 16, x: 0, y: 6)
         }
     }
 }
@@ -399,6 +545,12 @@ private struct EditableVisitRow: View {
                 .buttonStyle(.borderless)
                 .font(.caption)
                 .foregroundStyle(.blue)
+
+                #if targetEnvironment(simulator)
+                Text("Simulator: set Location → Custom to \(String(format: "%.6f", visit.latitude)), \(String(format: "%.6f", visit.longitude))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                #endif
             }
         }
         .padding(.vertical, 4)

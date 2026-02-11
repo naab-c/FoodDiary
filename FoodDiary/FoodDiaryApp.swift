@@ -10,6 +10,8 @@ import SwiftData
 
 @main
 struct FoodDiaryApp: App {
+    @StateObject private var geofenceService = VisitGeofenceService()
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             VisitEntry.self,
@@ -26,6 +28,10 @@ struct FoodDiaryApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(geofenceService)
+                .onAppear {
+                    geofenceService.configure(container: sharedModelContainer)
+                }
         }
         .modelContainer(sharedModelContainer)
     }

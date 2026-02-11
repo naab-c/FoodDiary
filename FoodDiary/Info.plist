@@ -4,5 +4,7 @@
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>FoodDiary needs your location to find nearby restaurants and places you visit.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Allow always so we can notify you when you arrive at a restaurant you've visited before, even when the app is closed.</string>
 </dict>
 </plist>
